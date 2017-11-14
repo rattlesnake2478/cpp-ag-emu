@@ -5,7 +5,7 @@
 ToolWindow::ToolWindow(QWidget *parent) :
     QDialog(parent)
 {
-    const QString labelNames[] = {"Pitch", "Roll", "Yaw", "BarSpeed", "Altitude", "Ball"};
+    const QString labelNames[] = {"Pitch", "Roll", "Yaw", "BarSpeed", "Altitude", "Ball", "RotorRPM", "EngineRPM", "EngineTemp1", "ExhaustTemp1", "EngineTemp2", "ExhaustTemp2"};
     _numRows = sizeof(labelNames) / sizeof(QString);
 
     // Set window params
@@ -47,3 +47,4 @@ void ToolWindow::UpdateFields(FlyData Params) {
         }
     }
 }
+

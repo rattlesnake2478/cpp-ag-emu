@@ -16,6 +16,7 @@ public:
 private:
     QLabel **labels;
     KeyLineEdit **lineEdits;
+    QLabel *textOutput;
     int _numRows;
 
 signals:

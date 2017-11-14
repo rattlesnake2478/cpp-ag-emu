@@ -26,6 +26,7 @@ protected:
 
 signals:
     void updateToolbox(FlyData);
+    void sendDebugText(QString text);
 
 public slots:
     void parameterChanged(QString name, QString text);

@@ -15,8 +15,10 @@ TEMPLATE = app
 SOURCES += main.cpp\
         mainwindow.cpp \
     toolwindow.cpp \
-    keylineedit.cpp
+    keylineedit.cpp \
+    debugwindow.cpp
 
 HEADERS  += mainwindow.h \
     toolwindow.h \
-    keylineedit.h
+    keylineedit.h \
+    debugwindow.h

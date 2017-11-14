@@ -15,6 +15,8 @@ void KeyLineEdit::keyPressEvent(QKeyEvent *e) {
          step = 0.1;
      } else if (controlPressed) {
          step = 10;
+     } else if (altPressed) {
+         step = 100;
      }
 
      if (e->key() == Qt::Key_Up) {
@@ -32,6 +34,10 @@ void KeyLineEdit::keyPressEvent(QKeyEvent *e) {
          controlPressed = true;
      }
 
+     if (e->key() == Qt::Key_Alt) {
+         altPressed = true;
+     }
+
      this->setText(QString::number(value));
 }
 
@@ -43,5 +49,9 @@ void KeyLineEdit::keyReleaseEvent(QKeyEvent *e) {
 
     if (e->key() == Qt::Key_Control) {
         controlPressed = false;
+    }
+
+    if (e->key() == Qt::Key_Alt) {
+        altPressed = false;
     }
 }

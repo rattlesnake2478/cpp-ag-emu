@@ -13,6 +13,7 @@ public:
 private:
     bool shiftPressed;
     bool controlPressed;
+    bool altPressed;
 
 protected:
     void keyPressEvent(QKeyEvent *);

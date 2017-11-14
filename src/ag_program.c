@@ -8,6 +8,11 @@
 #include "center.h"
 #include "cart.h"
 
+#define FILL_STACK_SIZE 1000
+int16 fillStackX[FILL_STACK_SIZE];
+int16 fillStackY[FILL_STACK_SIZE];
+uint16 stackCounter = 0;
+
 extern unsigned int keys;
 extern unsigned int lkeys;
 extern FlyData FlyPack;
@@ -21,6 +26,7 @@ extern void FILL(unsigned short c);
 extern void SendCorrections(uint8 isAngles);
 extern void UpdateTime(void);
 extern void SaveParam(void);
+extern void SendCommand(uint8 command);
 
 inline int16 roun(float x) {
     return x > 0 ? (int16) (x + 0.5) : (int16) (x - 0.5);
@@ -43,6 +49,12 @@ void Plot(int16 x, int16 y, color c) {
 color GetP(int16 x, int16 y) {
     unsigned int addr = (240 - y)*640 + (x + 320);
     return (color) GETP(addr);
+}
+
+inline int boundInt(int value, int min, int max) {
+    if (value < min) value = min;
+    if (value > max) value = max;
+    return value;
 }
 
 //-------------Primitives-------------------------------------------------------
@@ -233,13 +245,67 @@ void Mask(uint16 shiftx, uint16 shifty, const unsigned int *mask, unsigned int s
 }
 
 void Fill(int16 x, int16 y, color c) {
+    static uint8 deep = 0;
+    if (deep > 70) return;
+    deep++;
     color now = GetP(x, y);
     Plot(x, y, c);
     if ((GetP(x + 1, y) == now)&&(GetP(x + 1, y) != c)&&((x + 1) < 320))Fill(x + 1, y, c);
     if ((GetP(x - 1, y) == now)&&(GetP(x - 1, y) != c)&&((x - 1)>-320))Fill(x - 1, y, c);
     if ((GetP(x, y + 1) == now)&&(GetP(x, y + 1) != c)&&((y + 1) < 240))Fill(x, y + 1, c);
     if ((GetP(x, y - 1) == now)&&(GetP(x, y - 1) != c)&&((y - 1)>-240))Fill(x, y - 1, c);
+    deep--;
 }
+
+uint8 push(int16 x, int16 y) {
+    if(stackCounter >= FILL_STACK_SIZE) return 0;
+    fillStackX[stackCounter] = x;
+    fillStackY[stackCounter++] = y;
+    return 1;
+}
+
+uint8 pop(int16 *x, int16 *y) {
+    if(stackCounter == 0) return 0;
+    *x = fillStackX[--stackCounter];
+    *y = fillStackY[stackCounter];
+    return 1;
+}
+
+void FillByLine(int16 x, int16 y, color c) {
+    color now = GetP(x, y);
+    if (now == c) return;
+    int16 workX = 0, workY = 0;
+    if(!push(x, y)) return;
+    while (pop(&workX, &workY)) {
+        int16 upperBound = workY;
+        int16 lowerBound = workY;
+        int16 stepY = workY;
+        uint8 spanLeft = 0;
+        uint8 spanRight = 0;
+        while (((upperBound + 1) < 240) && GetP(workX, ++upperBound) == now);
+        while (((lowerBound - 1) > -240) && GetP(workX, --lowerBound) == now);
+        stepY = upperBound - 1;
+        while (stepY > lowerBound) {
+            Plot(workX, stepY, c);
+            if (!spanLeft && ((workX - 1)>-320) && GetP(workX-1, stepY) == now) {
+                spanLeft = 1;
+                if(!push(workX - 1, stepY)) return;
+            } else if (spanLeft  && ((workX - 1)>-320) && GetP(workX - 1, stepY) != now) {
+                spanLeft = 0;
+            }
+
+            if (!spanRight && ((workX + 1) < 320) && GetP(workX + 1, stepY) == now) {
+                spanRight = 1;
+                if(!push(workX + 1, stepY)) return;
+            } else if (spanRight  && ((workX + 1) < 320) && GetP(workX + 1, stepY) != now) {
+                spanRight = 0;
+            }
+            --stepY;
+        }
+    }
+    stackCounter = 0; // flushStack
+}
+
 //------------------------------------------------------------------------------
 
 void HugeSymbol(uint16 S, int16 X, int16 Y, color C) {
@@ -1449,6 +1515,172 @@ void DrawCart(void) {
     Circle(1, 0, 23, COLOR_BLACK);
 }
 
+void DrawRpmLine(float value, uint16 type) {
+    uint16 xOrigLow = type == LEFT ? 263: 325; //For bigger rect
+    uint16 xOrig = type == LEFT ? 274: 325;
+    uint16 yOrig = 430;
+    uint16 lineHeight = (uint16)(value / 120 * 375); // 130 - Max engine value, 375 - max line height
+    uint16 height = 0;
+    color lineColor = (lineHeight >= 281/*300*/ && lineHeight <= 345/*345*/ ) ? RPM_NORMAL_COLOR : RPM_DANGER_COLOR;
+    if(lineHeight > 345/*345*/) {
+        height = lineHeight >= 380 ? 380 : lineHeight;
+        Rect(xOrig, yOrig - height, 45, height - 345/*345*/, lineColor);
+    }
+    if(lineHeight > 281/*300*/) {
+        height = lineHeight >= 345/*345*/ ? 345/*345*/ : lineHeight;
+        Rect(xOrig, yOrig - height, 45, height - 281/*300*/, lineColor);
+    }
+    if(lineHeight > 40) {
+        height = lineHeight >= 281/*300*/ ? 281/*300*/ : lineHeight;
+        Rect(xOrig, yOrig - height, 45, height - 40, lineColor);
+    }
+    height = lineHeight >= 40 ? 40 : lineHeight;
+    Rect(xOrigLow, yOrig - height, 56, height, lineColor);
+}
+
+void DrawTempArc (float value, uint8 position) {
+    const int16 XORIGIN = -1;
+    const int16 YORIGIN = 3;
+
+    uint16 radiusMin = 0, radiusMax = 0, angleMin = 0, angleMax = 0; // Scale limitation
+    int16 section1x = 0, section1y = 0, section2x = 0, section2y = 0,section3x = 0, section3y = 0; //Points to one of three scale section
+    float underAngle = 0, aboveAngle = 0;
+    int8 sign = 1; //Sign of drawing
+    int16 scaleLenght = 0;
+    int16 fillX = 0, fillY = 0;
+    float sinVal = 0, cosVal = 0, lineAngle = 0;
+    color col = 0;
+    color normalColor = (position == ENGINE_TEMP1_ARC || position == ENGINE_TEMP2_ARC) ? ENGINE_COLOR : EXHAUST_COLOR;
+
+    switch (position) {
+        case ENGINE_TEMP1_ARC:
+            radiusMin = 120;
+            radiusMax = 161;
+            angleMin = 207;
+            angleMax = 333;
+            underAngle = 249/*288*/;// íèæíÿÿ 100 Öåëüñ
+            aboveAngle = 308/*319*/;// âåðõ 240 Öåëüñ
+            section1x = -80;
+            section1y = -120;
+            section2x = -120;
+            section2y = 80;
+            section3x = -80;
+            section3y = 120;
+        break;
+
+        case ENGINE_TEMP2_ARC:
+            radiusMin = 120;
+            radiusMax = 161;
+            angleMin = 153;
+            angleMax = 27;
+            underAngle = 111 /*72*/;
+            aboveAngle = 52/*41*/;
+            section1x = 80;
+            section1y = -120;
+            section2x = 120;
+            section2y = 80;
+            section3x = 80;
+            section3y = 120;
+        break;
+
+        case ENGINE_EXHAUST1_ARC:
+            radiusMin = 161;
+            radiusMax = 203;
+            angleMin = 207;
+            angleMax = 333;
+            underAngle = 228/*288*/; // 150 Öåëüñ
+            aboveAngle = 319; // 810 Öåëüñ
+            section1x = -140;
+            section1y = -120;
+            section2x = -150;
+            section2y = 115;
+            section3x = -100;
+            section3y = 150;
+        break;
+
+        case ENGINE_EXHAUST2_ARC:
+            radiusMin = 161;
+            radiusMax = 203;
+            angleMin = 153;
+            angleMax = 27;
+            underAngle = 132/*72*/;
+            aboveAngle = 41;
+            section1x = 140;
+            section1y = -120;
+            section2x = 150;
+            section2y = 115;
+            section3x = 100;
+            section3y = 150;
+        break;
+        default:
+            return;
+    }
+    scaleLenght = angleMax - angleMin;
+    sign = scaleLenght > 0 ? 1 : -1;
+    if (position == ENGINE_TEMP1_ARC || position == ENGINE_TEMP2_ARC){
+      lineAngle = angleMin + value / 300/*120*/ * scaleLenght; // 120 - max temp value
+    } else{
+      lineAngle = angleMin + value / 90 * scaleLenght;
+    }
+    if (sign * (lineAngle - angleMax) > 0) lineAngle = angleMax;
+    if (sign * (lineAngle - angleMin) < 0) lineAngle = angleMin;
+    sinVal = sin(lineAngle*DEG2RAD);
+    cosVal = cos(lineAngle*DEG2RAD);
+    col = (sign * (lineAngle - underAngle) < 0 || sign * (lineAngle - aboveAngle) > 0 ) ? TEMP_DANGER_COLOR : normalColor;
+    Lin((int16)(sinVal * radiusMin + XORIGIN), (int16)(cosVal * radiusMin + YORIGIN),
+        (int16)(sinVal * radiusMax + XORIGIN), (int16)(cosVal * radiusMax + YORIGIN), col);
+    sinVal = sin((lineAngle-(sign * 0.5))*DEG2RAD);
+    cosVal = cos((lineAngle-(sign * 0.5))*DEG2RAD);
+    fillX = (int16)(sinVal * (radiusMax - 6) + XORIGIN);
+    fillY = (int16)(cosVal * (radiusMax - 6) + YORIGIN-2);
+    if(!GetP(fillX, fillY)) FillByLine(fillX, fillY, col);
+    if (sign * (lineAngle - underAngle) > 0) FillByLine(section1x, section1y, col);
+    if (sign * (lineAngle - aboveAngle) > 0) FillByLine(section2x, section2y, col);
+    if (lineAngle == angleMax) FillByLine(section3x, section3y, col);
+}
+
+void DrawCenterDash(void) {
+    Mask(114,49,center,412,382);
+    OutText("x10", 100, -190, COLOR_WHITE, 0xFFFF, 20);
+    OutText("x10", -145, -190, COLOR_WHITE, 0xFFFF, 20);
+
+    //Draw center values
+    float rotorPercent = (float)FlyPack.rotorRpm / 6.368;
+    float enginePercent = (float)FlyPack.engineRpm / 62.0;
+    uint16 rotorPercentInt = boundInt((uint16)rotorPercent, 0, 120);
+    uint16 enginePercentInt = boundInt((int16)enginePercent, 0, 120);
+    DrawRpmLine(rotorPercent, LEFT);
+    DrawRpmLine(enginePercent, RIGHT);
+    PrintBigInt(rotorPercentInt, -24, -175, -320, 320, -240, 240, (FlyPack.rotorRpm >573 && FlyPack.rotorRpm < 700) ? COLOR_BLACK : COLOR_WHITE, RIGHT);
+    PrintBigInt(enginePercentInt, 39, -175, -320, 320, -240, 240, (FlyPack.engineRpm >5580 && FlyPack.engineRpm < 6890) ? COLOR_BLACK : COLOR_WHITE, RIGHT);
+
+    //Draw left values
+    float engineTemp1 = FlyPack.engineTemp1;
+    uint16 engineTemp1Int = boundInt((uint16)engineTemp1, 0,  300);/*120*/
+    DrawTempArc(engineTemp1, ENGINE_TEMP1_ARC);
+
+    float exhaustTemp1 = FlyPack.exhaustTemp1 / 10;
+    uint16 exhaustTemp1Int = boundInt((uint16)exhaustTemp1, 0, 90);/*90*/
+    DrawTempArc(exhaustTemp1, ENGINE_EXHAUST1_ARC);
+
+    PrintInt(engineTemp1Int, -66, -121, (engineTemp1Int > 99 && engineTemp1Int < 240) ? COLOR_BLACK : COLOR_WHITE, 0xFFFF, 20, RIGHT);
+    PrintInt(exhaustTemp1Int, -85, -160, (exhaustTemp1Int > 14 && exhaustTemp1Int < 81) ? COLOR_BLACK : COLOR_WHITE, 0xFFFF, 20, RIGHT);
+
+    //Draw right values
+    float engineTemp2 = FlyPack.engineTemp2;
+    uint16 engineTemp2Int = boundInt((uint16)engineTemp2, 0, 300);/*120*/
+    DrawTempArc(engineTemp2, ENGINE_TEMP2_ARC);
+
+    float exhaustTemp2 = FlyPack.exhaustTemp2 / 10;
+    uint16 exhaustTemp2Int = boundInt((uint16)exhaustTemp2, 0, 90);/*90*/
+    DrawTempArc(exhaustTemp2, ENGINE_EXHAUST2_ARC);
+
+    PrintInt(engineTemp2Int, 65, -120,  (engineTemp2Int > 99 && engineTemp2Int < 240) ? COLOR_BLACK : COLOR_WHITE, 0xFFFF, 20, LEFT);
+    PrintInt(exhaustTemp2Int, 84, -159, (exhaustTemp2Int > 14 && exhaustTemp2Int < 81) ? COLOR_BLACK : COLOR_WHITE, 0xFFFF, 20, LEFT);
+
+    Mask(114,49,center,412,382);
+}
+
 void Scales(void) {
     int cou = 0;
     static uint16 MaxAltitude = 600;
@@ -1496,11 +1728,11 @@ void Scales(void) {
     if (FlyPack.PBit.Speed300) Mask(10, 0, vel300, 150, 480);
     else Mask(10, 0, vel200, 150, 480);
 
-
-
     //Draw texts
     OutText("M", 290, 170, COLOR_WHITE, COLOR_BLACK, 20);
     OutText("Km/h", -310, 170, COLOR_WHITE, COLOR_BLACK, 20);
+    OutText("mm", 270, -190, COLOR_WHITE, COLOR_BLACK, 20);
+    OutText("H", -290, -190, COLOR_WHITE, COLOR_BLACK, 20);
     if (FlyPack.PBit.IsPitchCor && FlyPack.PBit.CorrOn) {
         OutText("T", 145, 220, COLOR_BLACK, COLOR_SNOW, 20);
     }
@@ -1525,9 +1757,12 @@ void Scales(void) {
     }
     PrintBigInt(FlyPack.PVal.Pressure / 40, 288, -220, -320, 320, -240, 240, COLOR_BLACK, RIGHT);
     PrintBigFloat(fabs(Variometer), -15, 208, COLOR_BLACK);
-    PrintBigFloat(fabs(FlyPack.N5g), -300, -231, COLOR_BLACK);
+    //PrintBigFloat(fabs(FlyPack.N5g), -300, -231, COLOR_BLACK);
+    //PrintBigInt(FlyPack.PVal.MotoHours, -315, -231,-320, 320, -240, 240, COLOR_BLACK, RIGHT);
+    PrintHugeInt(FlyPack.PVal.MotoHours / 3600, -255, -231, COLOR_BLACK, RIGHT);
     if (Variometer < -0.05)BigSymbol('-', -35, 208, -320, 320, -240, 240, COLOR_BLACK);
-    if (FlyPack.N5g < -0.05)BigSymbol('-', -315, -231, -320, 320, -240, 240, COLOR_BLACK);
+    //if (FlyPack.N5g < -0.05)BigSymbol('-', -315, -231, -320, 320, -240, 240, COLOR_BLACK);
+    if (FlyPack.PVal.MotoHours < -0.05)BigSymbol('-', -315, -231, -320, 320, -240, 240, COLOR_BLACK);
 
     //Filling speed scale
     for (cou = -137; cou<-37; cou += 5) {
@@ -1646,7 +1881,7 @@ void ShowTimer(void) {
         PrintHugeInt(FlyPack.ClockSec, 80, -233, COLOR_BLACK, RIGHT);
         if (FlyPack.ClockMin < 10) HugeSymbol('0', -20, -233, COLOR_BLACK);
         if (FlyPack.ClockSec < 10) HugeSymbol('0', 45, -233, COLOR_BLACK);
-        Symbol('×', -112, -215, COLOR_BLACK, COLOR_SNOW, 20);
+        Symbol('C', -112, -215, COLOR_BLACK, COLOR_SNOW, 20);
     }
 
 }
@@ -1734,7 +1969,7 @@ void Bubble(void) {
 }
 
 void Menu(void) {
-#define	COU			19
+#define	COU		20
 #define	NONE		0
 #define	MAIN		1
 #define ALTITUDE	2
@@ -1742,27 +1977,28 @@ void Menu(void) {
 #define	TIMER		4
 #define	MARK		5
 #define	SETTINGS	6
-#define	PRESSURE    7
-#define TEMPERATURE 8
-#define ALTMARK		10
+#define	PRESSURE        7
+#define TEMPERATURE     8
 #define	SPEEDMARK	9
+#define ALTMARK		10
 #define	INTERFACE	11
 #define	SCALE		12
 #define	SPEEDLIM	13
 #define	ANGLES		14
 #define	SPEEDMAX	15
 #define	SPEEDMIN	16
-#define PITCH		18
 #define	ROLL		17
+#define PITCH		18
+#define MOTOHOURS       19
 
 
-    //                             NONE        MAIN        	ALTITUDE 	ENVIRONMENT 	TIMER 	MARK         	SETTINGS     PRESSURE    TEMPERATURE 	VELOCITYMARK ALTITUDEMARK INTERFACE 	SCALE    	SPEEDLIM 	ANGLE_ZEROS SPEED_MAX    SPEED_MIN  ROLL        PITCH
-    static const uint16 Key1[COU] = {NONE, ALTITUDE, ALTITUDE, PRESSURE, TIMER, SPEEDMARK, INTERFACE, PRESSURE, TEMPERATURE, SPEEDMARK, ALTMARK, INTERFACE, SCALE, SPEEDMAX, ROLL, SPEEDMAX, SPEEDMIN, ROLL, PITCH};
-    static const uint16 Key2[COU] = {NONE, ENVIRONMENT, ALTITUDE, TEMPERATURE, TIMER, ALTMARK, SCALE, PRESSURE, TEMPERATURE, SPEEDMARK, ALTMARK, INTERFACE, SCALE, SPEEDMIN, PITCH, SPEEDMAX, SPEEDMIN, ROLL, PITCH};
-    static const uint16 Key3[COU] = {PRESSURE, TIMER, ALTITUDE, ENVIRONMENT, TIMER, MARK, SPEEDLIM, PRESSURE, TEMPERATURE, SPEEDMARK, ALTMARK, INTERFACE, SCALE, SPEEDLIM, ANGLES, SPEEDMAX, SPEEDMIN, ROLL, PITCH};
-    static const uint16 Key4[COU] = {NONE, MARK, ALTITUDE, ENVIRONMENT, TIMER, MARK, ANGLES, PRESSURE, TEMPERATURE, SPEEDMARK, ALTMARK, INTERFACE, SCALE, SPEEDLIM, ANGLES, SPEEDMAX, SPEEDMIN, ROLL, PITCH};
-    static const uint16 Key5[COU] = {NONE, SETTINGS, MAIN, ENVIRONMENT, MAIN, MARK, SETTINGS, NONE, ENVIRONMENT, MARK, MARK, INTERFACE, SCALE, SPEEDLIM, ANGLES, SPEEDMAX, SPEEDMIN, ANGLES, ANGLES};
-    static const uint16 Key6[COU] = {MAIN, NONE, MAIN, MAIN, MAIN, MAIN, MAIN, NONE, ENVIRONMENT, MARK, MARK, SETTINGS, SETTINGS, SETTINGS, SETTINGS, SPEEDLIM, SPEEDLIM, ANGLES, ANGLES};
+    //                               NONE      MAIN         ALTITUDE  ENVIRONMENT  TIMER  MARK       SETTINGS   PRESSURE     TEMPERATURE  SPEEDMARK  ALTMARK   INTERFACE  SCALE     SPEEDLIM  ANGLES    SPEEDMAX  SPEEDMIN  ROLL    PITCH   MOTOHOURS
+    static const uint16 Key1[COU] = {NONE,     ALTITUDE,    ALTITUDE, PRESSURE,    TIMER, SPEEDMARK, MOTOHOURS, PRESSURE,    TEMPERATURE, SPEEDMARK, ALTMARK,  INTERFACE, SCALE,    SPEEDMAX, ROLL,     SPEEDMAX, SPEEDMIN, ROLL,   PITCH,  MOTOHOURS};
+    static const uint16 Key2[COU] = {NONE,     ENVIRONMENT, ALTITUDE, TEMPERATURE, TIMER, ALTMARK,   SCALE,     PRESSURE,    TEMPERATURE, SPEEDMARK, ALTMARK,  INTERFACE, SCALE,    SPEEDMIN, PITCH,    SPEEDMAX, SPEEDMIN, ROLL,   PITCH,  MOTOHOURS};
+    static const uint16 Key3[COU] = {PRESSURE, TIMER,       ALTITUDE, ENVIRONMENT, TIMER, MARK,      SPEEDLIM,  PRESSURE,    TEMPERATURE, SPEEDMARK, ALTMARK,  INTERFACE, SCALE,    SPEEDLIM, ANGLES,   SPEEDMAX, SPEEDMIN, ROLL,   PITCH,  MOTOHOURS};
+    static const uint16 Key4[COU] = {NONE,     MARK,        ALTITUDE, ENVIRONMENT, TIMER, MARK,      SETTINGS,  PRESSURE,    TEMPERATURE, SPEEDMARK, ALTMARK,  INTERFACE, SCALE,    SPEEDLIM, ANGLES,   SPEEDMAX, SPEEDMIN, ROLL,   PITCH,  MOTOHOURS};
+    static const uint16 Key5[COU] = {NONE,     SETTINGS,    MAIN,     ENVIRONMENT, MAIN,  MARK,      SETTINGS,  NONE,        ENVIRONMENT, MARK,      MARK,     INTERFACE, SCALE,    SPEEDLIM, ANGLES,   SPEEDMAX, SPEEDMIN, ANGLES, ANGLES, SETTINGS};
+    static const uint16 Key6[COU] = {MAIN,     NONE,        MAIN,     MAIN,        MAIN,  MAIN,      MAIN,      NONE,        ENVIRONMENT, MARK,      MARK,     SETTINGS,  SETTINGS, SETTINGS, SETTINGS, SPEEDLIM, SPEEDLIM, ANGLES, ANGLES, SETTINGS};
 
 
     static const char * const MenuText[COU][6] = {
@@ -1771,7 +2007,7 @@ void Menu(void) {
         {"ÄÀÂËÅÍÈÅ", " ÒÅÌÏ-ÐÀ ", "", "", "", "   ÍÀÇÀÄ   "}, //ENVIRONMENT
         {"  ÐÀÇÐßÄ  ", "       +       ", "       -       ", "", "   CÎÕÐ.   ", "ÍÅ  ÑÎÕÐ."}, //TIMER
         {"ÑÊÎÐÎÑÒÜ", "  ÂÛÑÎÒÀ  ", "", "", "", "   ÍÀÇÀÄ   "}, //MARK
-        {" ÈÍÒÅÐÔ. ", "   ØÊÀËÛ   ", "ÎÃÐ.ÑÊÎÐ", "    ÓÃËÛ    ", "ÖÂ.×ÈÑÅË", "   ÍÀÇÀÄ   "}, //SETTINGS
+        {" Í.ÍÀÐÀÁ ", "   ØÊÀËÛ   ", "ÎÃÐ.ÑÊÎÐ", "", "ÖÂ.×ÈÑÅË", "   ÍÀÇÀÄ   "}, //SETTINGS
         {"", "       +       ", "       -       ", "   ÑÁÐÎÑ   ", "   CÎÕÐ.   ", "ÍÅ  ÑÎÕÐ."}, //PRESSURE
         {"  ÐÀÇÐßÄ  ", "       +       ", "       -       ", "   ÑÁÐÎÑ   ", "   CÎÕÐ.   ", "ÍÅ  ÑÎÕÐ."}, //TEMPERATURE
         {"  ÐÀÇÐßÄ  ", "       +       ", "       -       ", "   ÑÁÐÎÑ   ", "   CÎÕÐ.   ", "ÍÅ  ÑÎÕÐ."}, //VELOCITYMARK
@@ -1783,7 +2019,8 @@ void Menu(void) {
         {"", "       +       ", "       -       ", "   ÑÁÐÎÑ   ", "", "   ÍÀÇÀÄ   "}, //SPEED_MAX
         {"", "       +       ", "       -       ", "   ÑÁÐÎÑ   ", "", "   ÍÀÇÀÄ   "}, //SPEED_MIN
         {"  ÐÀÇÐßÄ  ", "       +       ", "       -       ", "   ÑÁÐÎÑ   ", "   CÎÕÐ.   ", "ÍÅ  ÑÎÕÐ."}, //ROLL
-        {"  ÐÀÇÐßÄ  ", "       +       ", "       -       ", "   ÑÁÐÎÑ   ", "   CÎÕÐ.   ", "ÍÅ  ÑÎÕÐ."}}; //PITCH
+        {"  ÐÀÇÐßÄ  ", "       +       ", "       -       ", "   ÑÁÐÎÑ   ", "   CÎÕÐ.   ", "ÍÅ  ÑÎÕÐ."}, //PITCH
+        {"  ÐÀÇÐßÄ  ", "       +       ", "       -       ", "   ÑÁÐÎÑ   ", "   CÎÕÐ.   ", "ÍÅ  ÑÎÕÐ."}}; //MOTOHOURS
 
     static const char * const MenuName[COU - 2] = {" ÇÀÄÀÍÈÅ ÒÅÊÓÙÅÉ ÂÛÑÎÒÛ ", " ÇÀÄÀÍÈÅ ÏÀÐÀÌÅÒÐÎÂ ÑÐÅÄÛ ", " ÍÀÑÒÐÎÉÊÀ ×ÀÑÎÂ ",
         " ÇÀÄÀÍÈÅ ÌÀÐÊÅÐÎÂ ", " ÍÀÑÒÐÎÉÊÈ ", " ÇÀÄÀÍÈÅ ÄÀÂËÅÍÈß ÀÝÐÎÄÐÎÌÀ ",
@@ -1791,8 +2028,8 @@ void Menu(void) {
         " ÍÀÑÒÐÎÉÊÀ ÈÍÒÅÐÔÅÉÑÀ ", " ÍÀÑÒÐÎÉÊÀ ØÊÀË ",
         " ÇÀÄÀÍÈÅ ÎÃÐÀÍÈ×ÅÍÈÉ ÑÊÎÐÎÑÒÈ ", " ÑÏÈÑÛÂÀÍÈÅ ÓÃËÎÂ ",
         " ÇÀÄÀÍÈÅ ÌÀÊÑÈÌÀËÜÍÎÉ ÑÊÎÐÎÑÒÈ ", " ÇÀÄÀÍÈÅ ÌÈÍÈÌÀËÜÍÎÉ ÑÊÎÐÎÑÒÈ ",
-        " ÇÀÄÀÍÈÅ ÓÃËÀ ÊÐÅÍÀ ", " ÇÀÄÀÍÈÅ ÓÃËÀ ÒÀÍÃÀÆÀ "};
-    static const char * const NameAdd[COU - 2] = {" M", "", "", "", "", " mm.Hg", "°C", " Km/h", " M", "", "", "", "", " Km/h", " Km/h", "°", "°"};
+        " ÇÀÄÀÍÈÅ ÓÃËÀ ÊÐÅÍÀ ", " ÇÀÄÀÍÈÅ ÓÃËÀ ÒÀÍÃÀÆÀ ", " ÇÀÄÀÍÈÅ Í.ÍÀÐÀÁÎÒÊÈ "};
+    static const char * const NameAdd[COU - 2] = {" M", "", "", "", "", " mm.Hg", "°C", " Km/h", " M", "", "", "", "", " Km/h", " Km/h", "°", "°", ""};
 
     static const char * const ABC[4][10] = {
         {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"},
@@ -1801,7 +2038,7 @@ void Menu(void) {
         {" ×ÀÑÛ ", " ÒÀÉÌÅÐ ", "", "", "", "", "", "", "", ""}};
 
     static const uint16 ABCcou[4] = {9, 1, 1, 2};
-    static const uint16 DigType[COU - 2] = {0x0104, 0x0000, 0x0207, 0x0000, 0x0000, 0x0003, 0x0103, 0x0204, 0x0204, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0106, 0x0106};
+    static const uint16 DigType[COU - 2] = {0x0104, 0x0000, 0x0207, 0x0000, 0x0000, 0x0003, 0x0103, 0x0204, 0x0204, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0106, 0x0106, 0x0006};
 
     static int16 DigVal[7];
 
@@ -1825,6 +2062,7 @@ void Menu(void) {
     static uint16 Menu = NONE, LastMenu = NONE, Dig = 0;
 
     int16 cou1, X;
+    uint32 X32;
     float fTemp;
     int16 lTemp;
     int16 iTemp;
@@ -1852,16 +2090,21 @@ void Menu(void) {
         for (cou1 = (int16) ((DigType[Menu - 2]&0xFF) - 1); cou1 >= 0; cou1--) {
             if (cou1) {
                 if (((DigVal[0]) || ((DigType[Menu - 2] >> 8) < 2))) {
+                    if ((Menu == MOTOHOURS)&&((cou1 == 3)))X = OutBackText("h", X, -174, MENU_TEXTCOLOR, MENU_BACKCOLOR, 20);
+                    if ((Menu == MOTOHOURS)&&((cou1 == 5)))X = OutBackText("m", X, -174, MENU_TEXTCOLOR, MENU_BACKCOLOR, 20);
+
                     X = OutBackText(ABC[0][DigVal[cou1]], X, -174, MENU_TEXTCOLOR, (uint16) (Dig == cou1 ? MENU_ACTIVEBACKCOLOR : MENU_BACKCOLOR), 20);
 
                     if ((Menu == TIMER)&&((cou1 == 3) || (cou1 == 5)))X = OutBackText(":", X, -174, MENU_TEXTCOLOR, MENU_BACKCOLOR, 20);
                     if (((Menu == ROLL) || (Menu == PITCH))&&(cou1 == 4))X = OutBackText(".", X, -174, MENU_TEXTCOLOR, MENU_BACKCOLOR, 20);
                 }
             } else {
-                if (Menu != TIMER && Menu != PRESSURE) {
+                if (Menu != TIMER && Menu != PRESSURE && Menu != MOTOHOURS) {
                     X = OutBackText(ABC[(DigType[Menu - 2] >> 8)][DigVal[0]], X, -174, 0, (uint16) (!Dig ? MENU_ACTIVEBACKCOLOR : MENU_BACKCOLOR), 20);
                 } else if (Menu == PRESSURE) {
                     X = OutBackText(ABC[(DigType[Menu - 2] >> 8)][DigVal[0]], X, -174, 0, (uint16) (MENU_BACKCOLOR), 20);
+                } else if (Menu == MOTOHOURS) {
+                    X = OutBackText(ABC[(DigType[Menu - 2] >> 8)][DigVal[0]], X, -174, 0, (uint16) (!Dig ? MENU_ACTIVEBACKCOLOR : MENU_BACKCOLOR), 20);
                 }
             }
         }
@@ -1898,10 +2141,6 @@ void Menu(void) {
                 if ((keys & KEY5) && FlyPack.PBit.TimerMode) FlyPack.PBit.TimerOn = !FlyPack.PBit.TimerOn;
 
                 break;
-
-                /*case MAIN:
-                       if(keys&KEY3)FlyPack.PBit.TimerMode=!FlyPack.PBit.TimerMode;
-                break;*/
 
             case SCALE:
                 if (keys & KEY1) FlyPack.PBit.Speed300 = 0;
@@ -1955,7 +2194,7 @@ void Menu(void) {
                 }
                 if (keys & KEY5) {
                     FlyPack.PVal.Pressure = (int16) (((DigVal[0]*100)+(DigVal[1]*10) + DigVal[2])*40);
-                    SendCorrections(ENV);
+                    SendCommand(SET_PRESS_COMMAND);
                     needParamSave = 1;
                 }
                 break;
@@ -1967,26 +2206,17 @@ void Menu(void) {
             case PITCH:
             case SPEEDMARK:
             case ALTMARK:
+            case MOTOHOURS:
                 if ((keys & KEY1)&&((DigVal[0]) || ((DigType[Menu - 2] >> 8) < 2)))Dig++;
                 if (keys & KEY2)DigVal[Dig]++;
                 if (keys & KEY3)DigVal[Dig]--;
                 if (keys & KEY4)switch (Menu) {
-                            /*
-                            case PRESSURE:
-                                           DigVal[0]=7;
-                                           DigVal[1]=6;
-                                           DigVal[2]=0;
-                                        break;
-                             */
-
                         case TEMPERATURE:
                             DigVal[0] = 0;
                             DigVal[1] = 1;
                             DigVal[2] = 5;
                             break;
 
-                            //			case TIMER:
-                            //			   if(DigVal[0])DigVal[0]=1;
                         case SPEEDMARK:
                         case ALTMARK:
                             if (DigVal[0]) {
@@ -2002,24 +2232,26 @@ void Menu(void) {
                         case ALTITUDE:
                         case ROLL:
                         case PITCH:
+                        case MOTOHOURS:
                             DigVal[0] = 0;
                             DigVal[1] = 0;
                             DigVal[2] = 0;
                             DigVal[3] = 0;
                             DigVal[4] = 0;
                             DigVal[5] = 0;
+                            DigVal[6] = 0;
                             break;
                     }
 
                 if (keys & KEY5)switch (Menu) {
                         case PRESSURE:
                             FlyPack.PVal.Pressure = (int16) (((DigVal[0]*100)+(DigVal[1]*10) + DigVal[2])*40);
-                            SendCorrections(ENV);
+                            SendCommand(SET_PRESS_COMMAND);
                             needParamSave = 1;
                             break;
                         case TEMPERATURE:
                             FlyPack.PVal.Temperature = (int16) (DigVal[0] ? -((DigVal[1]*10) + DigVal[2]) : (DigVal[1]*10) + DigVal[2]);
-                            SendCorrections(ENV);
+                            SendCommand(SET_PRESS_COMMAND);
                             needParamSave = 1;
                             break;
 
@@ -2040,7 +2272,7 @@ void Menu(void) {
                             FlyPack.PVal.Pressure = (int16) (((20000 - Alt1) / (20000 + Alt1))*(((float) FlyPack.PVal.Temperature) + 273.15) / 9.472789e-3);
                             // Êîñòûëü äëÿ äàâëåíèÿ
                             FlyPack.PVal.Pressure = (uint16) (LastPressure - (LastPressure - FlyPack.PVal.Pressure) * 1.2);
-                            SendCorrections(ENV);
+                            SendCommand(SET_PRESS_COMMAND);
                             needParamSave = 1;
                             break;
 
@@ -2095,6 +2327,17 @@ void Menu(void) {
                             needParamSave = 1;
                             break;
 
+                        case MOTOHOURS:
+                            FlyPack.PVal.MotoHours = (((uint32)DigVal[0])*3600000
+                                                     +((uint32)DigVal[1])*360000
+                                                     +((uint32)DigVal[2])*36000
+                                                     +((uint32)DigVal[3])*3600
+                                                     +((uint32)DigVal[4])*600
+                                                     +((uint32)DigVal[5])*60);
+                            SendCommand(SET_HOURS_COMMAND);
+                            needParamSave = 1;
+                            break;
+
                         default: break;
                     }
 
@@ -2112,6 +2355,11 @@ void Menu(void) {
                             if (DigVal[5] > 5)DigVal[5] = 0;
                             if (DigVal[5] < 0)DigVal[5] = 5;
 
+                            break;
+
+                        case MOTOHOURS:
+                            if (DigVal[4] > 5)DigVal[4] = 0;
+                            if (DigVal[4] < 0)DigVal[4] = 5;
                             break;
 
                         case ROLL:
@@ -2203,21 +2451,6 @@ void Menu(void) {
                 lTemp = FlyPack.ClockSec;
                 DigVal[5] = (int16) (lTemp / 10);
                 DigVal[6] = (int16) (lTemp % 10);
-
-
-                //lTemp=TimerTime;
-                //DigVal[6]=(int16)(lTemp%10);
-                //lTemp/=10;
-                //DigVal[5]=(int16)(lTemp%6);
-                //lTemp/=6;
-                //DigVal[4]=(int16)(lTemp%10);
-                //lTemp/=10;
-                //DigVal[3]=(int16)(lTemp%6);
-                //lTemp/=6;
-                //DigVal[2]=(int16)(lTemp%10);
-                //DigVal[1]=(int16)(lTemp/10);
-                //DigVal[0]=(int16)(Timer.TimerMode);
-
                 break;
 
             case ROLL:
@@ -2229,6 +2462,18 @@ void Menu(void) {
                     DigVal[cou1] = (int16) (X % 10);
                     X /= (int16) 10;
                 }
+                break;
+            case MOTOHOURS:
+                X32 = FlyPack.PVal.MotoHours / 3600;
+                for (cou1 = 3; cou1 >= 0; cou1--) {
+                    DigVal[cou1] = (int16) (X32 % 10);
+                    X32 /= (int16) 10;
+                }
+                X32 = FlyPack.PVal.MotoHours % 3600;
+                X32 /= 60;
+                DigVal[5] = (int16) (X32 % 10);
+                X32 /= (int16) 10;
+                DigVal[4] = (int16) ((X32 % 10) < 5 ? (X32 % 10) : (X32 % 10) - 6);
                 break;
 
             case SPEEDMARK:
@@ -2278,7 +2523,7 @@ void Menu(void) {
             break;
         default:
             for (cou1 = 0; cou1 < 6; cou1++)
-                //		 if((cou1==4)&&(Menu==TIMER)&&(!FlyPack.PBit.TimerOn))OutText(DigVal[0]?"    ÏÓÑÊ    ":"",(int16)(cou1*106-310),-226,MENU_TEXTCOLOR,MENU_BACKCOLOR,20);
+                // if((cou1==4)&&(Menu==TIMER)&&(!FlyPack.PBit.TimerOn))OutText(DigVal[0]?"    ÏÓÑÊ    ":"",(int16)(cou1*106-310),-226,MENU_TEXTCOLOR,MENU_BACKCOLOR,20);
                 OutText(MenuText[Menu - 1][cou1], (int16) (cou1 * 106 - 310), -226, MENU_TEXTCOLOR, MENU_BACKCOLOR, 20);
             break;
     }
@@ -2291,6 +2536,13 @@ void Menu(void) {
         SaveParam();
         needParamSave = 0;
     }
+    if (keys & KEY1) SendCommand(KEY1_COMMAND);
+    if (keys & KEY2) SendCommand(KEY2_COMMAND);
+    if (keys & KEY3) SendCommand(KEY3_COMMAND);
+    if (keys & KEY4) SendCommand(KEY4_COMMAND);
+    if (keys & KEY5) SendCommand(KEY5_COMMAND);
+    if (keys & KEY6) SendCommand(KEY6_COMMAND);
+
     keys = 0;
 }
 
@@ -2298,6 +2550,7 @@ void ag_program(void) {
     static int showsplash = 0;
     tick++;
     if (tick == 10)tick = 0;
+    if (tick == 0 && FlyPack.engineRpm >= MOTO_HOURS_LIMIT) FlyPack.PVal.MotoHours++; // Count moto hours
     FILL(COLOR_BLACK);
     if (showsplash) {
         static int splashcount = 0;
@@ -2305,15 +2558,10 @@ void ag_program(void) {
         if (tick == 9) ++splashcount;
         if (splashcount == 10) showsplash = 0;
     } else {
-        FillHoriz(FlyPack.Pitch, FlyPack.Roll);
-        DrawCart();
+        OutText("m/s", -120,210,COLOR_WHITE, 0xFFFF, 16);
+        DrawCenterDash();
         Scales();
         ShowTimer();
-        //Compass();
-        //Bubble();
         Menu();
-    }
-
-
-
+    }   
 }

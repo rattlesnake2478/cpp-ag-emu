@@ -59,6 +59,22 @@
 #define BALL_COLOR				COLOR_BLACK
 #define CLOCK_COLOR				COLOR_WHITE
 #define TIMER_COLOR				0xF7EF
+#define EXHAUST_COLOR           0x335F
+#define ENGINE_COLOR            0x3659
+
+
+#define RPM_NORMAL_COLOR        COLOR_GREEN
+#define RPM_WARNING_COLOR       COLOR_BLUE
+#define RPM_DANGER_COLOR        COLOR_RED
+
+#define TEMP_NORMAL_COLOR        COLOR_GREEN
+#define TEMP_WARNING_COLOR       COLOR_BLUE
+#define TEMP_DANGER_COLOR        COLOR_RED
+
+#define ENGINE_TEMP1_ARC        1
+#define ENGINE_TEMP2_ARC        2
+#define ENGINE_EXHAUST1_ARC     3
+#define ENGINE_EXHAUST2_ARC     4
 
 /*
 #define COLOR_DARKCYAN       0x002323
@@ -95,12 +111,24 @@
 #define COLOR_SNOW           0xFFFAFA
 */
 
-#define	LEFT 		        0
+#define	LEFT 		                0
 #define CENTER 				1
 #define	RIGHT 				2
 
 #define DEG2RAD  			0.017453292519943295769236907684
 #define RAD2DEG 			57.295779513082320876798154814105
+
+#define MOTO_HOURS_LIMIT    500//6000
+
+#define KEY1_COMMAND        0x01
+#define KEY2_COMMAND        0x02
+#define KEY3_COMMAND        0x03
+#define KEY4_COMMAND        0x04
+#define KEY5_COMMAND        0x05
+#define KEY6_COMMAND        0x06
+#define SET_HOURS_COMMAND   0x07
+#define REQ_HOURS_COMMAND   0x08
+#define SET_PRESS_COMMAND   0x09
 
 void ag_program(void);
 

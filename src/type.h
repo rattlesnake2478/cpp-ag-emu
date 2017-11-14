@@ -52,6 +52,7 @@ typedef struct
 	int16 		Temperature;
 	int16		DeltaRoll;
 	int16		DeltaPitch;
+        uint32          MotoHours;
 }ParamVal;
 
 typedef struct
@@ -62,7 +63,13 @@ typedef struct
 	uint16 		Barspeed;
 	float 		Altitude;
 	float		Ball;
-    float       N5g;
+        float           N5g;
+        uint16          rotorRpm;
+        uint16          engineRpm;
+        uint16          engineTemp1;
+        uint16          engineTemp2;
+        uint16          exhaustTemp1;
+        uint16          exhaustTemp2;
 	uint8   	TimerHour;
 	uint8		TimerMin;
 	uint8		TimerSec;
@@ -70,8 +77,13 @@ typedef struct
 	uint8		ClockMin;
 	uint8		ClockSec;
 	ParamBit 	PBit;
-	ParamVal    PVal;
+        ParamVal        PVal;
 
 } FlyData;
+
+typedef struct {
+    int16 x;
+    int16 y;
+} Point;
 
 #endif
